@@ -1,0 +1,509 @@
+﻿// Product API Demo Application
+class ProductApiDemo {
+    constructor() {
+        this.apiBaseUrl = 'http://localhost:5000/api';
+        this.products = [];
+        this.requestTimeout = 10000; // 10 seconds timeout
+        this.init();
+    }
+
+    init() {
+        this.setupEventListeners();
+        this.loadProducts();
+    }
+
+    setupEventListeners() {
+        // Tab navigation
+        document.querySelectorAll('.nav-tab').forEach(tab => {
+            tab.addEventListener('click', (e) => this.switchTab(e.target.dataset.tab));
+        });
+
+        // API URL configuration
+        document.getElementById('api-url').addEventListener('change', (e) => {
+            this.apiBaseUrl = e.target.value;
+        });
+
+        // Products list actions
+        document.getElementById('refresh-products').addEventListener('click', () => this.loadProducts());
+        document.getElementById('delete-all-products').addEventListener('click', () => this.confirmDeleteAll());
+
+        // Add product form
+        document.getElementById('add-product-form').addEventListener('submit', (e) => this.handleAddProduct(e));
+
+        // Update product
+        document.getElementById('update-select').addEventListener('change', (e) => this.handleUpdateSelect(e));
+        document.getElementById('update-product-form').addEventListener('submit', (e) => this.handleUpdateProduct(e));
+
+        // Delete product
+        document.getElementById('delete-select').addEventListener('change', (e) => this.handleDeleteSelect(e));
+        document.getElementById('delete-product-btn').addEventListener('click', () => this.confirmDeleteProduct());
+
+        // Test single product
+        document.getElementById('get-product-btn').addEventListener('click', () => this.getSingleProduct());
+
+        // Health check
+        document.getElementById('health-check-btn').addEventListener('click', () => this.checkHealth());
+
+        // Modal actions
+        document.getElementById('modal-cancel').addEventListener('click', () => this.hideModal());
+        document.getElementById('modal-confirm').addEventListener('click', () => this.confirmAction());
+
+        // Close modal on background click
+        document.getElementById('confirmation-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'confirmation-modal') {
+                this.hideModal();
+            }
+        });
+    }
+
+    // Tab Management
+    switchTab(tabId) {
+        // Update active tab
+        document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
+        document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+
+        // Show active content
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+
+        // Load data for specific tabs
+        if (tabId === 'update-product' || tabId === 'delete-product') {
+            this.populateProductSelects();
+        }
+    }
+
+    // API Helper Methods
+    async apiRequest(endpoint, options = {}) {
+        const url = `${this.apiBaseUrl}${endpoint}`;
+        const config = {
+            headers: {
+                'Content-Type': 'application/json',
+                ...options.headers
+            },
+            ...options
+        };
+
+        try {
+            // Create a timeout promise
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('Request timeout')), this.requestTimeout);
+            });
+
+            // Race between fetch and timeout
+            const fetchPromise = fetch(url, config);
+            const response = await Promise.race([fetchPromise, timeoutPromise]);
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                return await response.json();
+            }
+
+            return await response.text();
+        } catch (error) {
+            console.error('API Request failed:', error);
+            // Enhanced error handling with more specific messages
+            if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                throw new Error('Unable to connect to API server. Please check if the server is running.');
+            } else if (error.message === 'Request timeout') {
+                throw new Error('Request timed out. Please check your connection and try again.');
+            }
+            throw error;
+        }
+    }
+
+    // Products Management
+    async loadProducts() {
+        const btn = document.getElementById('refresh-products');
+        this.setLoadingState(btn, true);
+
+        try {
+            this.products = await this.apiRequest('/products');
+            this.renderProductsTable();
+            this.updateProductCount();
+            this.showToast('Success', 'Products loaded successfully', 'success');
+        } catch (error) {
+            this.showToast('Error', `Failed to load products: ${error.message}`, 'error');
+            this.products = [];
+            this.renderProductsTable();
+            this.updateProductCount();
+        } finally {
+            this.setLoadingState(btn, false);
+        }
+    }
+
+    renderProductsTable() {
+        const tbody = document.getElementById('products-table-body');
+
+        if (this.products.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No products found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = this.products.map(product => `
+            <tr>
+                <td>${product.id}</td>
+                <td>${this.escapeHtml(product.name)}</td>
+                <td>${this.escapeHtml(product.description || '')}</td>
+                <td class="currency">${this.formatCurrency(product.price)}</td>
+                <td>${product.quantity}</td>
+                <td class="date">${this.formatDate(product.createdDate)}</td>
+            </tr>
+        `).join('');
+    }
+
+    updateProductCount() {
+        document.getElementById('product-count').textContent = `Products: ${this.products.length}`;
+    }
+
+    async handleAddProduct(e) {
+        e.preventDefault();
+        const form = e.target;
+        const btn = form.querySelector('button[type="submit"]');
+
+        if (!form.checkValidity()) {
+            form.reportValidity();
+            return;
+        }
+
+        this.setLoadingState(btn, true);
+
+        try {
+            const formData = new FormData(form);
+            const product = {
+                name: formData.get('name'),
+                description: formData.get('description') || '',
+                price: parseFloat(formData.get('price')),
+                quantity: parseInt(formData.get('quantity'))
+            };
+
+            await this.apiRequest('/products', {
+                method: 'POST',
+                body: JSON.stringify(product)
+            });
+
+            this.showToast('Success', 'Product added successfully', 'success');
+            form.reset();
+            this.loadProducts();
+        } catch (error) {
+            this.showToast('Error', `Failed to add product: ${error.message}`, 'error');
+        } finally {
+            this.setLoadingState(btn, false);
+        }
+    }
+
+    populateProductSelects() {
+        const updateSelect = document.getElementById('update-select');
+        const deleteSelect = document.getElementById('delete-select');
+
+        const options = this.products.map(product =>
+            `<option value="${product.id}">${product.id} - ${this.escapeHtml(product.name)}</option>`
+        ).join('');
+
+        updateSelect.innerHTML = '<option value="">Select a product...</option>' + options;
+        deleteSelect.innerHTML = '<option value="">Select a product...</option>' + options;
+    }
+
+    handleUpdateSelect(e) {
+        const productId = parseInt(e.target.value);
+        const form = document.getElementById('update-product-form');
+
+        if (!productId) {
+            form.style.display = 'none';
+            return;
+        }
+
+        const product = this.products.find(p => p.id === productId);
+        if (product) {
+            document.getElementById('update-name').value = product.name;
+            document.getElementById('update-description').value = product.description || '';
+            document.getElementById('update-price').value = product.price;
+            document.getElementById('update-quantity').value = product.quantity;
+            form.style.display = 'block';
+        }
+    }
+
+    async handleUpdateProduct(e) {
+        e.preventDefault();
+        const form = e.target;
+        const btn = form.querySelector('button[type="submit"]');
+        const productId = parseInt(document.getElementById('update-select').value);
+
+        if (!form.checkValidity()) {
+            form.reportValidity();
+            return;
+        }
+
+        this.setLoadingState(btn, true);
+
+        try {
+            const formData = new FormData(form);
+            const product = {
+                id: productId,
+                name: formData.get('name'),
+                description: formData.get('description') || '',
+                price: parseFloat(formData.get('price')),
+                quantity: parseInt(formData.get('quantity'))
+            };
+
+            await this.apiRequest(`/products/${productId}`, {
+                method: 'PUT',
+                body: JSON.stringify(product)
+            });
+
+            this.showToast('Success', 'Product updated successfully', 'success');
+            this.loadProducts();
+        } catch (error) {
+            this.showToast('Error', `Failed to update product: ${error.message}`, 'error');
+        } finally {
+            this.setLoadingState(btn, false);
+        }
+    }
+
+    handleDeleteSelect(e) {
+        const productId = parseInt(e.target.value);
+        const detailsDiv = document.getElementById('delete-product-details');
+
+        if (!productId) {
+            detailsDiv.style.display = 'none';
+            return;
+        }
+
+        const product = this.products.find(p => p.id === productId);
+        if (product) {
+            document.getElementById('delete-detail-id').textContent = product.id;
+            document.getElementById('delete-detail-name').textContent = product.name;
+            document.getElementById('delete-detail-description').textContent = product.description || 'N/A';
+            document.getElementById('delete-detail-price').textContent = this.formatCurrency(product.price);
+            document.getElementById('delete-detail-quantity').textContent = product.quantity;
+            document.getElementById('delete-detail-created').textContent = this.formatDate(product.createdDate);
+            detailsDiv.style.display = 'block';
+        }
+    }
+
+    confirmDeleteProduct() {
+        const productId = parseInt(document.getElementById('delete-select').value);
+        const product = this.products.find(p => p.id === productId);
+
+        if (product) {
+            this.showModal(
+                'Delete Product',
+                `Are you sure you want to delete "${product.name}"? This action cannot be undone.`,
+                () => this.deleteProduct(productId)
+            );
+        }
+    }
+
+    async deleteProduct(productId) {
+        try {
+            await this.apiRequest(`/products/${productId}`, {
+                method: 'DELETE'
+            });
+
+            this.showToast('Success', 'Product deleted successfully', 'success');
+            document.getElementById('delete-select').value = '';
+            document.getElementById('delete-product-details').style.display = 'none';
+            this.loadProducts();
+        } catch (error) {
+            this.showToast('Error', `Failed to delete product: ${error.message}`, 'error');
+        }
+    }
+
+    confirmDeleteAll() {
+        if (this.products.length === 0) {
+            this.showToast('Info', 'No products to delete', 'warning');
+            return;
+        }
+
+        this.showModal(
+            'Delete All Products',
+            `Are you sure you want to delete all ${this.products.length} products? This action cannot be undone.`,
+            () => this.deleteAllProducts()
+        );
+    }
+
+    async deleteAllProducts() {
+        const btn = document.getElementById('delete-all-products');
+        this.setLoadingState(btn, true);
+
+        try {
+            await this.apiRequest('/products', {
+                method: 'DELETE'
+            });
+
+            this.showToast('Success', 'All products deleted successfully', 'success');
+            this.loadProducts();
+        } catch (error) {
+            this.showToast('Error', `Failed to delete all products: ${error.message}`, 'error');
+        } finally {
+            this.setLoadingState(btn, false);
+        }
+    }
+
+    async getSingleProduct() {
+        const productId = parseInt(document.getElementById('test-product-id').value);
+        const btn = document.getElementById('get-product-btn');
+        const resultDiv = document.getElementById('single-product-result');
+
+        if (!productId) {
+            this.showToast('Error', 'Please enter a valid product ID', 'error');
+            return;
+        }
+
+        this.setLoadingState(btn, true);
+        resultDiv.style.display = 'none';
+
+        try {
+            const product = await this.apiRequest(`/products/${productId}`);
+
+            document.getElementById('single-detail-id').textContent = product.id;
+            document.getElementById('single-detail-name').textContent = product.name;
+            document.getElementById('single-detail-description').textContent = product.description || 'N/A';
+            document.getElementById('single-detail-price').textContent = this.formatCurrency(product.price);
+            document.getElementById('single-detail-quantity').textContent = product.quantity;
+            document.getElementById('single-detail-created').textContent = this.formatDate(product.createdDate);
+
+            resultDiv.style.display = 'block';
+            this.showToast('Success', 'Product retrieved successfully', 'success');
+        } catch (error) {
+            this.showToast('Error', `Failed to get product: ${error.message}`, 'error');
+        } finally {
+            this.setLoadingState(btn, false);
+        }
+    }
+
+    async checkHealth() {
+        const btn = document.getElementById('health-check-btn');
+        const resultDiv = document.getElementById('health-result');
+
+        this.setLoadingState(btn, true);
+        resultDiv.style.display = 'none';
+
+        try {
+            const response = await this.apiRequest('/health');
+            const health = typeof response === 'object' ? response : { status: 'Healthy', timestamp: new Date().toISOString(), productCount: this.products.length };
+
+            const statusElement = document.getElementById('health-status');
+            statusElement.textContent = health.status || 'Healthy';
+            statusElement.className = `status ${health.status === 'Healthy' ? 'status--success' : 'status--error'}`;
+
+            document.getElementById('health-timestamp').textContent = this.formatDate(health.timestamp || new Date().toISOString());
+            document.getElementById('health-product-count').textContent = health.productCount || this.products.length;
+
+            resultDiv.style.display = 'block';
+            this.showToast('Success', 'Health check completed', 'success');
+        } catch (error) {
+            const statusElement = document.getElementById('health-status');
+            statusElement.textContent = 'Unhealthy';
+            statusElement.className = 'status status--error';
+
+            document.getElementById('health-timestamp').textContent = this.formatDate(new Date().toISOString());
+            document.getElementById('health-product-count').textContent = 'N/A';
+
+            resultDiv.style.display = 'block';
+            this.showToast('Error', `Health check failed: ${error.message}`, 'error');
+        } finally {
+            this.setLoadingState(btn, false);
+        }
+    }
+
+    // Modal Management
+    showModal(title, message, onConfirm) {
+        document.getElementById('modal-title').textContent = title;
+        document.getElementById('modal-message').textContent = message;
+        document.getElementById('confirmation-modal').classList.remove('hidden');
+
+        this.modalConfirmCallback = onConfirm;
+    }
+
+    hideModal() {
+        document.getElementById('confirmation-modal').classList.add('hidden');
+        this.modalConfirmCallback = null;
+    }
+
+    confirmAction() {
+        if (this.modalConfirmCallback) {
+            this.modalConfirmCallback();
+        }
+        this.hideModal();
+    }
+
+    // Toast Notifications
+    showToast(title, message, type = 'info') {
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `
+            <div class="toast-title">${this.escapeHtml(title)}</div>
+            <div class="toast-message">${this.escapeHtml(message)}</div>
+        `;
+
+        const container = document.getElementById('toast-container');
+        container.appendChild(toast);
+
+        // Show toast with animation
+        requestAnimationFrame(() => {
+            toast.classList.add('show');
+        });
+
+        // Hide toast after 5 seconds
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.parentNode.removeChild(toast);
+                }
+            }, 300);
+        }, 5000);
+    }
+
+    // Utility Methods
+    setLoadingState(button, loading) {
+        if (loading) {
+            button.classList.add('btn--loading');
+            button.disabled = true;
+            const originalText = button.textContent;
+            button.setAttribute('data-original-text', originalText);
+            button.innerHTML = `<span>${originalText}</span>`;
+        } else {
+            button.classList.remove('btn--loading');
+            button.disabled = false;
+            const originalText = button.getAttribute('data-original-text');
+            if (originalText) {
+                button.textContent = originalText;
+                button.removeAttribute('data-original-text');
+            }
+        }
+    }
+
+    formatCurrency(amount) {
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: 'USD'
+        }).format(amount);
+    }
+
+    formatDate(dateString) {
+        const date = new Date(dateString);
+        return new Intl.DateTimeFormat('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        }).format(date);
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+}
+
+// Initialize the application
+document.addEventListener('DOMContentLoaded', () => {
+    new ProductApiDemo();
+});
